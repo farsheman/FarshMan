@@ -1,0 +1,493 @@
+name: Build FarshMan APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Create Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf app gradle settings.gradle build.gradle gradle.properties
+          mkdir -p app/src/main/java/com/farshman app/src/main/assets
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "FarshMan"
+          include(":app")
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.farshman'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId 'com.farshman'
+                  minSdk 24
+                  targetSdk 35
+                  versionCode 7
+                  versionName '7.0'
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      shrinkResources false
+                  }
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:theme="@style/AppTheme"
+                  android:label="FarshMan"
+                  android:usesCleartextTraffic="false"
+                  android:resizeableActivity="true"
+                  android:allowBackup="false"
+                  android:supportsRtl="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:screenOrientation="portrait"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:windowLightStatusBar">false</item>
+                  <item name="android:statusBarColor">#17120F</item>
+                  <item name="android:navigationBarColor">#17120F</item>
+                  <item name="android:colorAccent">#B8893C</item>
+                  <item name="android:windowActionModeOverlay">true</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > app/src/main/java/com/farshman/MainActivity.java <<'EOF'
+          package com.farshman;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.webkit.ValueCallback;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          public class MainActivity extends Activity {
+              private WebView webView;
+              private ValueCallback<Uri[]> uploadCallback;
+
+              @Override public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  webView = new WebView(this);
+                  setContentView(webView);
+
+                  WebSettings s = webView.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setAllowFileAccess(true);
+                  s.setAllowContentAccess(true);
+                  s.setBuiltInZoomControls(false);
+                  s.setDisplayZoomControls(false);
+                  s.setSupportZoom(false);
+                  s.setMediaPlaybackRequiresUserGesture(true);
+                  s.setUserAgentString(s.getUserAgentString() + " FarshMan/7.0");
+
+                  webView.setWebViewClient(new WebViewClient());
+                  webView.setWebChromeClient(new WebChromeClient() {
+                      @Override public boolean onShowFileChooser(
+                              WebView view, ValueCallback<Uri[]> callback,
+                              FileChooserParams params) {
+                          if (uploadCallback != null) uploadCallback.onReceiveValue(null);
+                          uploadCallback = callback;
+                          Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                          intent.addCategory(Intent.CATEGORY_OPENABLE);
+                          intent.setType("image/*");
+                          intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false);
+                          try {
+                              startActivityForResult(intent, 1001);
+                          } catch (Exception e) {
+                              uploadCallback = null;
+                              callback.onReceiveValue(null);
+                          }
+                          return true;
+                      }
+                  });
+
+                  webView.loadUrl("file:///android_asset/index.html");
+              }
+
+              @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+                  if (requestCode == 1001 && uploadCallback != null) {
+                      Uri[] results = null;
+                      if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                          results = new Uri[]{data.getData()};
+                      }
+                      uploadCallback.onReceiveValue(results);
+                      uploadCallback = null;
+                  }
+              }
+
+              @Override public void onBackPressed() {
+                  if (webView != null && webView.canGoBack()) webView.goBack();
+                  else super.onBackPressed();
+              }
+          }
+          EOF
+
+          cat > app/src/main/assets/index.html <<'EOF'
+          <!doctype html>
+          <html lang="fa" dir="rtl">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+          <title>FarshMan</title>
+          <style>
+          :root{--bg:#f6f1e9;--card:#fffaf3;--ink:#211a16;--muted:#75675c;--gold:#b8893c;--gold2:#8f6729;--line:#eadfd2;--danger:#b33a2e}
+          *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+          body{margin:0;background:var(--bg);color:var(--ink);font-family:Tahoma,Arial,sans-serif}
+          header{position:sticky;top:0;z-index:20;background:#211a16;color:#fff;padding:14px 16px;display:flex;align-items:center;justify-content:space-between}
+          header b{font-size:20px} header small{opacity:.75}
+          main{max-width:760px;margin:auto;padding:14px 12px 40px}
+          .nav{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+          button,.fileBtn{border:0;border-radius:12px;padding:12px 10px;font:inherit;font-weight:700;cursor:pointer}
+          .nav button{background:#eadfce;color:#33271f} .nav button.active{background:var(--gold);color:#fff}
+          .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px;margin-bottom:12px;box-shadow:0 5px 18px #4c34200b}
+          h2{margin:4px 0 12px;font-size:19px} h3{margin:0 0 8px}
+          .muted{color:var(--muted);font-size:13px;line-height:1.8}
+          .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+          input{width:100%;border:1px solid var(--line);border-radius:12px;padding:13px;background:#fff;font:inherit}
+          .primary{background:var(--gold);color:white} .secondary{background:#efe5d8;color:#3a2d25}
+          .danger{background:#f5dfdc;color:var(--danger)}
+          .search{display:grid;grid-template-columns:1fr 110px;gap:8px}
+          .ruggrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+          .rug{border:1px solid var(--line);background:#fff;border-radius:15px;padding:12px;text-align:right}
+          .rug.selected{outline:3px solid #b8893c55}
+          .swatch{height:78px;border-radius:11px;margin-bottom:9px;background:linear-gradient(135deg,#7e231f,#d5ae67 42%,#1e2e45 70%,#7d1d1d)}
+          .badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#efe4d3;font-size:11px;margin:2px}
+          iframe{width:100%;height:420px;border:0;border-radius:14px;background:#191919}
+          .viewerLink{display:block;text-align:center;text-decoration:none;background:#efe5d8;color:#392b22;padding:11px;border-radius:11px;margin-top:8px;font-weight:700}
+          .status{padding:10px 12px;border-radius:11px;background:#efe5d8;font-size:13px;line-height:1.7;margin-top:10px}
+          .status.error{background:#f6dfdc;color:#8e281f}
+          .hidden{display:none!important}
+          #roomStage{position:relative;overflow:hidden;background:#d9d0c5;border-radius:16px;min-height:300px;touch-action:none}
+          #roomCanvasImage{display:block;width:100%;height:auto;max-height:65vh;object-fit:contain;background:#ddd}
+          #rugOverlay{position:absolute;left:50%;top:50%;width:45%;transform:translate(-50%,-50%) rotate(0deg);transform-origin:center;touch-action:none;user-select:none;display:none;box-shadow:0 9px 18px #0005}
+          .roomTools{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:9px}
+          .roomTools button{padding:10px 6px}
+          .details{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+          .detail{background:#f7efe5;border-radius:10px;padding:8px;font-size:12px;line-height:1.6}
+          .detail b{display:block;color:#5b493b}
+          @media(max-width:480px){iframe{height:350px}.details{grid-template-columns:1fr}}
+          </style>
+          </head>
+          <body>
+          <header><b>FarshMan</b><small>کاتالوگ و چیدمان فرش</small></header>
+          <main>
+            <div class="nav">
+              <button id="tabCatalog" class="active" onclick="showTab('catalog')">کاتالوگ</button>
+              <button id="tabModel" onclick="showTab('model')">مدل سه‌بعدی</button>
+              <button id="tabRoom" onclick="showTab('room')">چیدمان اتاق</button>
+            </div>
+
+            <section id="catalog">
+              <div class="card">
+                <h2>انتخاب فرش</h2>
+                <div class="search">
+                  <input id="codeInput" value="FM-001" placeholder="مثلاً FM-001" autocomplete="off">
+                  <button class="primary" onclick="findRug()">جستجو</button>
+                </div>
+                <div id="catalogStatus" class="status">یک کد را وارد کنید یا از فهرست انتخاب کنید.</div>
+              </div>
+              <div id="rugGrid" class="ruggrid"></div>
+            </section>
+
+            <section id="model" class="hidden">
+              <div class="card">
+                <h2 id="modelTitle">مدل سه‌بعدی</h2>
+                <div id="modelStatus" class="status">فرش را انتخاب کنید.</div>
+                <iframe id="sketchViewer" title="Sketchfab 3D viewer" allow="autoplay; fullscreen; xr-spatial-tracking" allowfullscreen></iframe>
+                <a id="sketchLink" class="viewerLink hidden" target="_blank" rel="noopener">مشاهده مستقیم در Sketchfab</a>
+              </div>
+            </section>
+
+            <section id="room" class="hidden">
+              <div class="card">
+                <h2>چیدمان روی عکس اتاق</h2>
+                <p class="muted">دوربین کاملاً حذف شده است. فقط یک عکس از گالری انتخاب کنید. فرش روی عکس به‌صورت دوبعدی جابه‌جا، بزرگ/کوچک و چرخانده می‌شود.</p>
+                <input id="roomFile" type="file" accept="image/*" class="hidden" onchange="loadRoom(event)">
+                <button class="primary" onclick="document.getElementById('roomFile').click()">انتخاب عکس از گالری</button>
+                <div id="roomStatus" class="status">هنوز عکسی انتخاب نشده است.</div>
+                <div id="roomStage" class="hidden">
+                  <img id="roomCanvasImage" alt="عکس اتاق">
+                  <img id="rugOverlay" alt="فرش انتخاب‌شده">
+                </div>
+                <div id="roomControls" class="roomTools hidden">
+                  <button class="secondary" onclick="moveRug(-2,0)">←</button>
+                  <button class="secondary" onclick="moveRug(2,0)">→</button>
+                  <button class="secondary" onclick="moveRug(0,-2)">↑</button>
+                  <button class="secondary" onclick="moveRug(0,2)">↓</button>
+                  <button class="secondary" onclick="scaleRug(0.92)">−</button>
+                  <button class="secondary" onclick="scaleRug(1.08)">＋</button>
+                  <button class="secondary" onclick="rotateRug(-5)">↺</button>
+                  <button class="secondary" onclick="rotateRug(5)">↻</button>
+                  <button class="danger" onclick="resetRug()">بازنشانی</button>
+                </div>
+              </div>
+            </section>
+          </main>
+
+          <script>
+          const rugs = [{"code": "FM-001", "name": "تبریز تصویری", "design": "تصویری کلاسیک", "color": "لاکی، کرم و سرمه‌ای", "dimensions": "300×200 سانتی‌متر", "material": "پشم", "density": "متراکم", "thickness": "حدود 10 میلی‌متر", "weight": "حدود 18 کیلوگرم", "style": "کلاسیک", "location": "پذیرایی و نشیمن", "features": "نقوش تصویری و جزئیات ظریف", "model": "https://sketchfab.com/models/08fee343183d4287a9ac8269ec4e97c5/embed"}, {"code": "FM-002", "name": "گلیم قشقایی قدیمی", "design": "هندسی و سنتی", "color": "قرمز، نارنجی و سرمه‌ای", "dimensions": "250×170 سانتی‌متر", "material": "پشم", "density": "متوسط", "thickness": "حدود 6 میلی‌متر", "weight": "حدود 10 کیلوگرم", "style": "سنتی", "location": "نشیمن و اتاق مطالعه", "features": "بافت دستباف و نقوش هندسی", "model": "https://sketchfab.com/models/c8124eef7ac3407bae33fdb2203f4588/embed"}, {"code": "FM-003", "name": "فرش کلاسیک ایرانی", "design": "کلاسیک", "color": "طبق نمونه انتخابی", "dimensions": "قابل انتخاب", "material": "پشم / ترکیبی", "density": "متوسط تا متراکم", "thickness": "وابسته به مدل", "weight": "وابسته به ابعاد", "style": "کلاسیک", "location": "پذیرایی، نشیمن یا اتاق", "features": "اطلاعات تکمیلی قابل ویرایش", "model": ""}, {"code": "FM-004", "name": "فرش افشان کرم", "design": "افشان", "color": "طبق نمونه انتخابی", "dimensions": "قابل انتخاب", "material": "پشم / ترکیبی", "density": "متوسط تا متراکم", "thickness": "وابسته به مدل", "weight": "وابسته به ابعاد", "style": "افشان", "location": "پذیرایی، نشیمن یا اتاق", "features": "اطلاعات تکمیلی قابل ویرایش", "model": ""}, {"code": "FM-005", "name": "فرش ترنج سرمه‌ای", "design": "ترنج", "color": "طبق نمونه انتخابی", "dimensions": "قابل انتخاب", "material": "پشم / ترکیبی", "density": "متوسط تا متراکم", "thickness": "وابسته به مدل", "weight": "وابسته به ابعاد", "style": "ترنج", "location": "پذیرایی، نشیمن یا اتاق", "features": "اطلاعات تکمیلی قابل ویرایش", "model": ""}, {"code": "FM-006", "name": "فرش خشتی", "design": "خشتی", "color": "طبق نمونه انتخابی", "dimensions": "قابل انتخاب", "material": "پشم / ترکیبی", "density": "متوسط تا متراکم", "thickness": "وابسته به مدل", "weight": "وابسته به ابعاد", "style": "خشتی", "location": "پذیرایی، نشیمن یا اتاق", "features": "اطلاعات تکمیلی قابل ویرایش", "model": ""}, {"code": "FM-007", "name": "فرش شاه‌عباسی", "design": "شاه‌عباسی", "color": "طبق نمونه انتخابی", "dimensions": "قابل انتخاب", "material": "پشم / ترکیبی", "density": "متوسط تا متراکم", "thickness": "وابسته به مدل", "weight": "وابسته به ابعاد", "style": "شاه‌عباسی", "location": "پذیرایی، نشیمن یا اتاق", "features": "اطلاعات تکمیلی قابل ویرایش", "model": ""}, {"code": "FM-008", "name": "فرش مدرن مینیمال", "design": "مدرن", "color": "طبق نمونه انتخابی", "dimensions": "قابل انتخاب", "material": "پشم / ترکیبی", "density": "متوسط تا متراکم", "thickness": "وابسته به مدل", "weight": "وابسته به ابعاد", "style": "مدرن", "location": "پذیرایی، نشیمن یا اتاق", "features": "اطلاعات تکمیلی قابل ویرایش", "model": ""}, {"code": "FM-009", "name": "فرش وینتیج", "design": "وینتیج", "color": "طبق نمونه انتخابی", "dimensions": "قابل انتخاب", "material": "پشم / ترکیبی", "density": "متوسط تا متراکم", "thickness": "وابسته به مدل", "weight": "وابسته به ابعاد", "style": "وینتیج", "location": "پذیرایی، نشیمن یا اتاق", "features": "اطلاعات تکمیلی قابل ویرایش", "model": ""}, {"code": "FM-010", "name": "فرش سنتی لاکی", "design": "سنتی", "color": "طبق نمونه انتخابی", "dimensions": "قابل انتخاب", "material": "پشم / ترکیبی", "density": "متوسط تا متراکم", "thickness": "وابسته به مدل", "weight": "وابسته به ابعاد", "style": "سنتی", "location": "پذیرایی، نشیمن یا اتاق", "features": "اطلاعات تکمیلی قابل ویرایش", "model": ""}];
+          let selected = rugs[0];
+          let room = {x:50,y:50,scale:1,rot:0,drag:false,sx:0,sy:0,ox:50,oy:50};
+
+          function $(id){return document.getElementById(id)}
+          function normalizeCode(v){
+            return (v||'').trim().toUpperCase().replace(/[۰-۹]/g,d=>'۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[٠-٩]/g,d=>'٠١٢٣٤٥٦٧٨٩'.indexOf(d));
+          }
+
+          function showTab(tab){
+            ['catalog','model','room'].forEach(id=>$(id).classList.toggle('hidden',id!==tab));
+            ['Catalog','Model','Room'].forEach(n=>$('tab'+n).classList.toggle('active',n.toLowerCase()===tab));
+            if(tab==='model') updateModel();
+            if(tab==='room') updateRoom();
+          }
+
+          function renderGrid(){
+            $('rugGrid').innerHTML = rugs.map(r=>`
+              <button class="rug ${selected.code===r.code?'selected':''}" onclick="selectRug('${r.code}')">
+                <div class="swatch"></div>
+                <b>${escapeHtml(r.name)}</b><br>
+                <span class="badge">${r.code}</span><span class="badge">${escapeHtml(r.style)}</span>
+              </button>`).join('');
+          }
+
+          function escapeHtml(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+
+          function findRug(){
+            const code=normalizeCode($('codeInput').value);
+            const r=rugs.find(x=>x.code===code);
+            if(!r){
+              $('catalogStatus').className='status error';
+              $('catalogStatus').textContent='کد پیدا نشد. کدهای معتبر FM-001 تا FM-010 هستند.';
+              return;
+            }
+            selectRug(r.code);
+            $('catalogStatus').className='status';
+            $('catalogStatus').textContent=`${r.code} — ${r.name} انتخاب شد.`;
+          }
+
+          function selectRug(code){
+            selected=rugs.find(r=>r.code===code)||rugs[0];
+            $('codeInput').value=selected.code;
+            renderGrid();
+            renderDetails();
+            updateModel();
+            updateRoom();
+          }
+
+          function renderDetails(){
+            $('catalogStatus').innerHTML = `
+              <b>${escapeHtml(selected.name)}</b> — ${selected.code}
+              <div class="details" style="margin-top:9px">
+                <div class="detail"><b>طرح</b>${escapeHtml(selected.design)}</div>
+                <div class="detail"><b>رنگ</b>${escapeHtml(selected.color)}</div>
+                <div class="detail"><b>ابعاد</b>${escapeHtml(selected.dimensions)}</div>
+                <div class="detail"><b>جنس</b>${escapeHtml(selected.material)}</div>
+                <div class="detail"><b>تراکم</b>${escapeHtml(selected.density)}</div>
+                <div class="detail"><b>ضخامت</b>${escapeHtml(selected.thickness)}</div>
+                <div class="detail"><b>وزن</b>${escapeHtml(selected.weight)}</div>
+                <div class="detail"><b>سبک</b>${escapeHtml(selected.style)}</div>
+                <div class="detail"><b>مناسب برای</b>${escapeHtml(selected.location)}</div>
+                <div class="detail"><b>ویژگی</b>${escapeHtml(selected.features)}</div>
+              </div>`;
+          }
+
+          function updateModel(){
+            $('modelTitle').textContent=`${selected.code} — ${selected.name}`;
+            if(selected.model){
+              $('sketchViewer').src=selected.model+'?autostart=1&ui_theme=dark';
+              $('sketchLink').href=selected.model.replace('/embed','');
+              $('sketchLink').classList.remove('hidden');
+              $('modelStatus').className='status';
+              $('modelStatus').textContent='مدل سه‌بعدی از Sketchfab بارگذاری می‌شود؛ چرخش و زوم از کنترل‌های خود مدل انجام می‌شود.';
+            } else {
+              $('sketchViewer').removeAttribute('src');
+              $('sketchLink').classList.add('hidden');
+              $('modelStatus').className='status';
+              $('modelStatus').textContent='برای این کد هنوز مدل سه‌بعدی واقعی اضافه نشده است؛ عمداً مدل فرش دیگری جایگزین نمی‌شود.';
+            }
+          }
+
+          function loadRoom(e){
+            const file=e.target.files && e.target.files[0];
+            if(!file) return;
+            if(!file.type.startsWith('image/')){
+              $('roomStatus').className='status error';
+              $('roomStatus').textContent='فایل انتخاب‌شده تصویر نیست.';
+              return;
+            }
+            const url=URL.createObjectURL(file);
+            $('roomCanvasImage').onload=()=>URL.revokeObjectURL(url);
+            $('roomCanvasImage').src=url;
+            $('roomStage').classList.remove('hidden');
+            $('roomControls').classList.remove('hidden');
+            $('rugOverlay').style.display='block';
+            room={x:50,y:50,scale:1,rot:0,drag:false,sx:0,sy:0,ox:50,oy:50};
+            updateRoom();
+            $('roomStatus').className='status';
+            $('roomStatus').textContent=`عکس انتخاب شد. فرش ${selected.code} روی آن قرار گرفت. برای جابه‌جایی، خود فرش را بکشید.`;
+          }
+
+          function updateRoom(){
+            if(!$('roomStage')) return;
+            const img=$('rugOverlay');
+            if(!img) return;
+            img.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(`
+              <svg xmlns="http://www.w3.org/2000/svg" width="900" height="600">
+                <defs><pattern id="p" width="90" height="60" patternUnits="userSpaceOnUse">
+                  <rect width="90" height="60" fill="#7f2b25"/>
+                  <path d="M0 30 Q22 4 45 30 Q68 56 90 30 M45 0 Q75 30 45 60 Q15 30 45 0" fill="none" stroke="#e2c27d" stroke-width="6"/>
+                  <circle cx="45" cy="30" r="10" fill="#183047"/>
+                </pattern></defs>
+                <rect x="10" y="10" width="880" height="580" rx="24" fill="url(#p)" stroke="#e6c981" stroke-width="14"/>
+              </svg>`);
+            img.style.left=room.x+'%';
+            img.style.top=room.y+'%';
+            img.style.width=(45*room.scale)+'%';
+            img.style.transform=`translate(-50%,-50%) rotate(${room.rot}deg)`;
+          }
+
+          function moveRug(dx,dy){room.x=Math.max(8,Math.min(92,room.x+dx));room.y=Math.max(8,Math.min(92,room.y+dy));updateRoom()}
+          function scaleRug(f){room.scale=Math.max(.35,Math.min(2.2,room.scale*f));updateRoom()}
+          function rotateRug(d){room.rot=(room.rot+d+360)%360;updateRoom()}
+          function resetRug(){room.x=50;room.y=50;room.scale=1;room.rot=0;updateRoom()}
+
+          const overlay=$('rugOverlay');
+          overlay.addEventListener('pointerdown',e=>{
+            room.drag=true; room.sx=e.clientX; room.sy=e.clientY; room.ox=room.x; room.oy=room.y;
+            overlay.setPointerCapture(e.pointerId);
+          });
+          overlay.addEventListener('pointermove',e=>{
+            if(!room.drag) return;
+            const rect=$('roomStage').getBoundingClientRect();
+            room.x=room.ox+(e.clientX-room.sx)/rect.width*100;
+            room.y=room.oy+(e.clientY-room.sy)/rect.height*100;
+            room.x=Math.max(5,Math.min(95,room.x)); room.y=Math.max(5,Math.min(95,room.y));
+            updateRoom();
+          });
+          overlay.addEventListener('pointerup',()=>room.drag=false);
+          overlay.addEventListener('pointercancel',()=>room.drag=false);
+
+          $('codeInput').addEventListener('keydown',e=>{if(e.key==='Enter')findRug()});
+          renderGrid(); selectRug('FM-001');
+          </script>
+          </body>
+          </html>
+          EOF
+
+      - name: Validate generated project
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s app/src/main/assets/index.html
+          test -s app/src/main/java/com/farshman/MainActivity.java
+          test -s app/src/main/AndroidManifest.xml
+          ! grep -R "getElementById(\"rugViewer\")" app/src/main/assets/index.html
+          ! grep -R "openCamera\|CAMERA" app/src/main app/src/main/AndroidManifest.xml || true
+          grep -q 'id="sketchViewer"' app/src/main/assets/index.html
+          grep -q 'id="roomStage"' app/src/main/assets/index.html
+          grep -q 'id="roomCanvasImage"' app/src/main/assets/index.html
+          grep -q 'id="rugOverlay"' app/src/main/assets/index.html
+          grep -q 'FM-010' app/src/main/assets/index.html
+
+      - name: Generate Gradle wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle wrapper --gradle-version 8.9 --distribution-type bin
+
+      - name: Build release APK
+        run: ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -s "$APK"
+          file "$APK"
+          ls -lh "$APK"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: farsheman-apk-final-v7
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
